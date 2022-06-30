@@ -1,14 +1,23 @@
 from argparse import Namespace
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from unittest.mock import Mock, patch
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from allure_commons.logger import AllureMemoryLogger
+from allure_commons.model2 import ATTACHMENT_PATTERN, Attachment
 from vedro import Config, Scenario
-from vedro.core import ArgumentParser, Dispatcher, ScenarioResult, StepResult, VirtualScenario
+from vedro.core import (
+    ArgumentParser,
+    Dispatcher,
+    FileArtifact,
+    MemoryArtifact,
+    ScenarioResult,
+    StepResult,
+    VirtualScenario,
+)
 from vedro.events import ArgParseEvent, ConfigLoadedEvent
 from vedro.plugins.director import Director, DirectorPlugin
 from vedro.plugins.director.rich.test_utils import make_path, make_random_name
@@ -17,7 +26,7 @@ from vedro_allure_reporter import AllureLabel, AllureReporterPlugin
 
 __all__ = ("plugin_manager_", "logger_", "logger_factory_", "dispatcher", "director",
            "make_parsed_args", "logger", "patch_uuid", "make_test_case", "make_scenario_result",
-           "choose_reporter",)
+           "choose_reporter", "create_attachment",)
 
 
 @pytest.fixture()
@@ -68,7 +77,8 @@ def patch_uuid(uuid: Optional[str] = None):
 def make_vscenario(*,
                    path: Optional[Path] = None,
                    subject: Optional[str] = None,
-                   tags: Optional[List[str]] = None) -> VirtualScenario:
+                   tags: Optional[List[str]] = None,
+                   labels: Optional[List[AllureLabel]] = None) -> VirtualScenario:
     namespace = {}
     if path is not None:
         namespace["__file__"] = str(path)
@@ -76,24 +86,28 @@ def make_vscenario(*,
         namespace["subject"] = subject
     if tags is not None:
         namespace["tags"] = tags
+    if labels is not None:
+        namespace['__vedro__allure_labels__'] = labels
     scenario = type("Scenario", (Scenario,), namespace)
     return VirtualScenario(scenario, [])
 
 
 def make_scenario_result(path: Optional[Path] = None,
                          subject: Optional[str] = None,
-                         tags: Optional[List[str]] = None) -> ScenarioResult:
+                         tags: Optional[List[str]] = None,
+                         labels: Optional[List[AllureLabel]] = None) -> ScenarioResult:
     if path is None:
         path = make_path("namespace")
     if subject is None:
         subject = make_random_name()
-    vscenario = make_vscenario(path=path, subject=subject, tags=tags)
+    vscenario = make_vscenario(path=path, subject=subject, tags=tags, labels=labels)
     return ScenarioResult(vscenario)
 
 
 def make_test_case(uuid: str, scenario_result: ScenarioResult,
                    steps: Optional[List[StepResult]] = None,
-                   labels: Optional[List[AllureLabel]] = None) -> Dict[str, Any]:
+                   labels: Optional[List[AllureLabel]] = None,
+                   attachments: Optional[List[Attachment]] = None) -> Dict[str, Any]:
     test_case = {
         "uuid": uuid,
         "name": scenario_result.scenario.subject,
@@ -119,7 +133,18 @@ def make_test_case(uuid: str, scenario_result: ScenarioResult,
             })
     if labels:
         for label in labels:
-            test_case["labels"].append({"name": label.name, "value": label.value})
+            test_case["labels"].append({
+                "name": label.name,
+                "value": label.value
+            })
+    if attachments:
+        test_case["attachments"] = []
+        for attachment in attachments:
+            test_case["attachments"].append({
+                "name": attachment.name,
+                "source": attachment.source,
+                "type": attachment.type,
+            })
     return test_case
 
 
@@ -127,3 +152,9 @@ async def choose_reporter(dispatcher: Dispatcher,
                           director: DirectorPlugin, reporter: AllureReporterPlugin) -> None:
     await dispatcher.fire(ConfigLoadedEvent(Path(), Config))
     await dispatcher.fire(ArgParseEvent(ArgumentParser()))
+
+
+def create_attachment(artifact: Union[MemoryArtifact, FileArtifact],
+                      attachment_uuid: UUID) -> Attachment:
+    file_name = ATTACHMENT_PATTERN.format(prefix=attachment_uuid, ext="txt")
+    return Attachment(name=artifact.name, source=file_name, type=artifact.mime_type)
